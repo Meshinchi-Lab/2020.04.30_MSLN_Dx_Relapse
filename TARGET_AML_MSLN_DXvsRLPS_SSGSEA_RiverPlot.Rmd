@@ -1,0 +1,832 @@
+---
+title: "MLSN Expression River Plot"
+author: "Jenny Smith"
+date: "5/6/2020"
+output: html_document
+---
+
+# Set-up 
+
+```{r setup}
+library(knitr)
+# dir(file.path(PROJHOME), pattern = "MSLN")
+
+
+knitr::opts_knit$set(root.dir = file.path(PROJHOME,"2020.04.30_MSLN_Dx_Relapse"))
+
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, 
+                      fig.align='center', fig.width = 10, fig.height = 10)
+
+
+options(stringsAsFactors = FALSE,bitmapType = 'cairo', device='x11')
+grDevices::X11.options(type='cairo')
+```
+
+```{r message = FALSE, warning=FALSE}
+library(stringr)
+library(magrittr)
+library(ggplot2)
+library(Cairo)
+library(gridExtra)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(readr)
+library(DeGSEA)
+library(ggalluvial)
+library(ggfittext)
+getwd()
+```
+
+
+#ClinData
+
+```{r}
+merged <- read.csv(file.path(CDE,"Merged/TARGET_AML_0531_1031_merged_CDEs_5.29.20.csv"))
+
+
+merged <- merged %>% 
+  filter(!is.na(USI) | USI == "Unknown")
+
+dim(merged) # 2399  145
+head(merged[,1:5])
+```
+
+```{r}
+msln.pos.neg <- read.csv("alluvial_plots/Meso_dx_rel_for_river_plot.csv") %>% 
+  dplyr::select(-matches("^X"))
+
+
+dim(msln.pos.neg)
+head(msln.pos.neg)
+# tail(msln.pos.neg)
+```
+
+```{r}
+sample_info <- read.csv(file.path(TARGET,"SequencingDataMatrix/TARGET_AML_Ribodepleted_Master_Manifest_5.29.20.csv")) %>%
+  mutate_at(vars(Mutations.Category), ~case_when(
+    grepl("AML", .) ~ gsub("OtherAML", "AML", .), 
+    is.na(.) ~ Group, 
+    TRUE ~ .)) 
+
+head(sample_info[,1:4])
+dim(sample_info) #2345  152
+```
+
+
+
+#RNA-seq Counts 
+
+```{r}
+TPM <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/TARGET_AML_DSAML_MPN_NBM_Ribodepleted_dupGenesRemoved_TPM.RDS"))
+
+dim(TPM)
+head(TPM[,1:5])
+```
+
+
+```{r message=FALSE, eval=FALSE}
+TPM_dx <- read_csv(file.path(HOME,"0000.00.03_Expression_Matrices/TARGET_AML_0531_1031_Ribodepleted_RNAseq_dupGenesRemoved_TPM.csv"))
+TPM_dx <- column_to_rownames(TPM_dx, "X1")
+# TPM_dx <- as.matrix(TPM_dx[rowSums(TPM_dx) = 10, ])
+
+dim(TPM_dx) # 51573  1574
+head(TPM_dx[,1:5])
+```
+
+```{r message=FALSE, eval=FALSE}
+TPM_ds <- read_csv(file.path(HOME,"0000.00.03_Expression_Matrices/TARGET_AAML08B1_AAML1531_Ribodepleted_RNAseq_DS-AML_dupGenesRemoved_TPM.csv"))
+TPM_ds <- column_to_rownames(TPM_ds, "X1")
+# TPM_ds <- as.matrix(TPM_ds[rowSums(TPM_ds) = 10, ])
+
+dim(TPM_ds) #51573   228
+head(TPM_ds[,1:5])
+```
+
+```{r messge=FALSE, eval=FALSE}
+TPM_rlps <- read_csv(file.path(HOME,"0000.00.03_Expression_Matrices/TARGET_0531_1031_Relapse_Ribodepleted_RNAseq_geneLevel_dupGenesRemoved_TPM.csv"))
+
+colnames(TPM_rlps) <- ifelse(colnames(TPM_rlps) %in% colnames(TPM_dx), 
+                             paste0(colnames(TPM_rlps),"_replicate"), colnames(TPM_rlps))
+TPM_rlps <- column_to_rownames(TPM_rlps, "X1")
+# TPM_rlps <- as.matrix(TPM_rlps[rowSums(TPM_rlps) = 10, ])
+
+dim(TPM_rlps)  #51573   543
+head(TPM_rlps[,1:5])
+```
+
+```{r}
+identical(rownames(TPM_dx), rownames(TPM_ds))
+identical(rownames(TPM_dx), rownames(TPM_rlps))
+```
+
+```{r eval=FALSE}
+TPM <- cbind(TPM_dx,TPM_rlps, TPM_ds)
+identical(colnames(TPM), sample_info$Sample)
+
+
+dim(TPM) #51573  2345
+rm(TPM_dx, TPM_ds, TPM_rlps)
+# saveRDS(TPM, file.path(PROJHOME, "0000.00.03_ExpressionMatrices/TARGET_AML_DSAML_MPN_NBM_Ribodepleted_dupGenesRemoved_TPM.RDS"))
+# dir(file.path(PROJHOME, "0000.00.03_ExpressionMatrices"))
+```
+
+
+
+
+#River Plot
+
+-- From Katherin Tarlock
+Small thing but to format figures and labeling for manuscript can you please change "KMT2A" to "KMT2A-R" and then "T(8;21)" to t(8;21)?
+And replace "Inv(16)" with "inv(16)" - small things I know but one reviewer called us out specifically on aligning labeling with manuscript text last time so want to make sure we do that moving forward.
+thanks
+
+```{r}
+table(msln.pos.neg$Dx, useNA='ifany')
+table(msln.pos.neg$Relapse,useNA='ifany')
+41/139*100
+34/139*100
+```
+
+```{r}
+forPlot <- msln.pos.neg %>% 
+  left_join(., dplyr::select(merged,Cytogenetic.Category.1,USI),
+            by="USI") %>% 
+  mutate(Disease="Pediatric AML") %>%
+  dplyr::select(USI,Cytogenetic.Category.1,Disease,Diagnosis="Dx",Relapse) %>% 
+  mutate(N=n(),
+         Cytogenetic.Category.1=ifelse(Cytogenetic.Category.1=="Unknown",
+                                       "Other",
+                                       Cytogenetic.Category.1)) %>%
+
+  # group_by(Disease,Diagnosis,Relapse) %>%
+  group_by(Cytogenetic.Category.1,Diagnosis,Relapse) %>%
+  
+  summarise(Number_of_Cases=n(),
+            Percent=round(Number_of_Cases/N[1]*100, digits = 1)) %>%
+  ungroup() %>%
+  
+  mutate_at(vars(Diagnosis,Relapse), ~factor(., levels=c("Positive", "Negative")))  %>%
+  mutate_at(vars(Cytogenetic.Category.1),
+              ~case_when(. == "MLL" ~ "KMT2A-R",
+                         .== "t.8.21." ~ "t(8;21)",
+                         .=="inv.16." ~ "inv(16)",
+                         .=="Other" ~ "Other\nKaryotype",
+                         .=="Normal" ~ "Normal\nKaryotype")) %>%
+
+  mutate_at(vars(Cytogenetic.Category.1),
+            ~factor(.,levels=c("KMT2A-R","t(8;21)","inv(16)",
+                               "Other\nKaryotype","Normal\nKaryotype"))) %>%
+  arrange(Cytogenetic.Category.1)
+
+
+forPlot
+# head(forPlot)
+# table(forPlot$Cytogenetic.Category.1, useNA = 'ifany')
+```
+
+
+```{r fig.height=6.5, fig.width=10}
+alluvial <- ggplot(data=forPlot, 
+                         aes(axis1=Cytogenetic.Category.1,
+                             axis2=Diagnosis, 
+                             axis3=Relapse,
+                             y=Percent)) + 
+                    geom_alluvium(aes(color=Diagnosis, 
+                                      fill=Diagnosis), 
+                                  # size=3,
+                                  width = 1/2, 
+                                  reverse=T) +  
+                    scale_fill_brewer(type="qual",palette = "Set1") +
+                    scale_color_brewer(type="qual",palette = "Set1") +
+                    geom_stratum(alpha=c(0.4), #rep(0.4,4) 
+                                 size=1.25,
+                                 width = 1/2,
+                                 reverse=T,
+                                 fill=c("white")) +  #c("dodgerblue",rep("black",6))
+                    geom_fit_text(stat="stratum",
+                                  color="black",
+                                  fontface="bold",
+                                  outside=FALSE,
+                                  padding.y=unit(3,"mm"),
+                                  padding.x=unit(0.75,"mm"),
+                                  grow=FALSE,
+                                  reflow=TRUE,
+                                  width = 1/2,
+                                  min.size=16,
+                                  size=30,
+                                  label.strata=TRUE,
+                                  reverse=T) +
+                    # scale_y_continuous(breaks = seq(0,100,by=10),
+                    #                    limits = c(0,100)) +
+                    scale_x_continuous(labels=c("Disease Type",
+                                              "MSLN Expression\nAt Diagnosis",
+                                              "MSLN Expression\nAt Relapse"),
+                                       expand = c(0.01,0.01),
+                                       breaks = c(1:3)) +#limits=c(0.75,3.25)
+                    labs(y="Percent of Patients") +
+                    theme_classic() +
+                    theme(axis.text.y = element_text(size=18, color="black"),
+                          axis.text.x = element_text(size=20,color="black"),
+                          axis.title = element_text(size=20),
+                          plot.margin = margin(l=5,r=8,b=5,unit="mm"),
+                          legend.text = element_text(size=16),
+                          legend.position = "top",
+                          legend.title = element_blank()) 
+    # coord_flip()
+
+
+```
+
+```{r}
+# pdf("TARGET_AML_MSLNexpn_alluvialPlot.pdf",height = 6.5, width=10)
+# pdf("TARGET_AML_MSLNexpn_by_Primary.Cyto.Code_PosVsNeg_alluvialPlot_5.27.20.pdf",height = 6.5, width=10.5)
+# pdf("TARGET_AML_MSLNexpn_by_Primary.Cyto.Code_alluvialPlot.pdf",height = 6.5, width=10.5)
+alluvial
+# dev.off()
+```
+
+
+
+#SSGSEA 
+
+From Katherine Tarlock:
+The authors do not provide pathway analysis for transcriptomic correlates of MSLN. Analysis of MSLN expression as a continuous variable with ssGSEA could also enhance the sensitivity of this analysis. 
+
+
+As I said, if we don't/can't do this, as if you can send me why not and what we did do and we can craft a courteous "that cannot be done" response.
+
+```{r}
+# BiocManager::install("GSVA")
+# BiocManager::install("GSVAdata")
+library(GSVA)
+library(GSVAdata)
+library(Biobase)
+library(GSEABase)
+library(genefilter)
+library(limma)
+library(RColorBrewer)
+library(gageData)
+# library(snow)
+```
+
+```{r}
+KEGG <- readRDS(file.path(HOME,"0000.00.01_GSEA_geneSets_gmt/c2.cp.kegg.v6.0.symbols.RDS"))
+
+# head(KEGG)
+```
+
+```{r}
+kegg.gs <- lapply(names(KEGG),function(x){
+  GeneSet(KEGG[[x]],
+               setName=x,
+               geneIdType=SymbolIdentifier(),
+               collectionType=BroadCollection(category = "c2",
+                                              subCategory="c2.cp.kegg.v6.0"))
+})
+
+# is.list(kegg.gs)
+kegg.collection <- GeneSetCollection(kegg.gs)
+kegg.collection
+# head(names(kegg.collection))
+```
+
+```{r}
+data(sigmet.idx.hs)
+data(kegg.sets.hs)
+kegg.sigmet <- kegg.sets.hs[sigmet.idx.hs]
+names(kegg.sigmet) <- sapply(names(kegg.sigmet), function(x) substr(x,10,nchar(x))) %>% 
+  toupper(.) %>%
+  paste("KEGG",.) %>%
+  gsub("\\(|\\)|\\/|\\,", "", .) %>%
+  gsub(" {1,}|\\-","_",.) %>%
+  gsub("__{2,}", "_", .)
+
+length(kegg.sigmet) #177 
+names(kegg.sigmet)[1:5]
+
+
+# setdiff(names(KEGG), names(kegg.sigmet))
+```
+
+
+
+```{r}
+samps <- sample_info %>% 
+  filter(Time_point=="diagnostic", 
+         Group=="AML", 
+         !grepl("[rR]eplicate",Sample)) 
+
+dim(samps)
+# head(samps)
+table(samps$Batch)
+table(samps$AML_Subtype)
+```
+
+```{r}
+TPM <- TPM[,samps$Sample]
+TPM <- as.matrix(TPM[rowSums(TPM >= 1.0) >= 0.01*ncol(TPM),])
+logTPM <- log2(TPM+1)
+log10TPM <- log10(TPM+1)
+scaledTPM <- t(scale(t(log10TPM), center = T, scale=F))
+
+#Erm, how can log2 and log10 values center-scaled be identical??
+range(t(scale(t(logTPM), center = T, scale=F))["MSLN", ]) #-1.994333  8.080639
+range(t(scale(t(log10TPM), center = T, scale=F))["MSLN", ]) #-0.600354  2.432515
+# range(t(scale(t(TPM), center = T, scale=T))["MSLN", ])
+
+dim(TPM) #26091  1492
+class(TPM)
+```
+
+```{r eval=FALSE}
+gsva.res <- gsva(expr = logTPM,
+                 gset.idx.list = kegg.collection, 
+                 # annotation=,
+                 method="gsva",
+                 kcdf="Poisson", #Gaussian
+                 parallel.sz=2, 
+                 mx.diff=TRUE,
+                 abs.ranking=FALSE, 
+                 tau=1,
+                 min.sz=15,
+                 max.sz=450,
+                 verbose=TRUE)
+
+# saveRDS(gsva.res,"TARGET_AML_RBD_GSVA_C2.KEGGpaths.RDS")
+
+```
+
+```{r}
+gsva.res <- readRDS("TARGET_AML_RBD_GSVA_C2.KEGGpaths.RDS")
+
+head(gsva.res[,1:5])
+dim(gsva.res)
+```
+
+https://stats.stackexchange.com/questions/225795/correlation-when-one-variable-has-both-positive-and-negative-values
+
+
+```{r}
+identical(colnames(log10TPM), colnames(gsva.res))
+design <- model.matrix(~0+log10TPM["MSLN",])
+
+
+range(gsva.res) #-0.8345510  0.8303137
+range(design)  #0.000000 3.032869
+
+
+# head(design)
+# dim(design)
+
+fit <- lmFit(gsva.res, design)
+fit <- eBayes(fit)
+dim(fit)
+```
+
+```{r}
+allGeneSets <- topTable(fit, coef=1, p.value = 0.001,number=Inf) %>% 
+  rownames_to_column("GeneSet") %>% 
+  arrange(desc(logFC))
+
+head(allGeneSets, n=10)
+# tail(allGeneSets, n=10)
+# dim(allGeneSets)
+```
+
+
+```{r}
+paths_to_include <- c(intersect(names(KEGG),names(kegg.sigmet)),
+          grep("METABOLISM|BIOSYNTHESIS|RECEPTOR.INTERACTION", names(KEGG), value=T)) %>% 
+          grep("OLFACTORY", ., invert = T, value=T) %>% 
+          unique()
+sig.met.gsva.idx <- which(rownames(fit) %in% paths_to_include)
+
+DEgeneSets <- topTable(fit[sig.met.gsva.idx,], coef=1,
+                       number=Inf,
+                       p.value=0.001, 
+                       adjust="BH") %>%
+  rownames_to_column("GeneSet") %>%
+  left_join(., sapply(KEGG,length) %>%
+                    as.data.frame(.) %>%
+                    rownames_to_column("GeneSet") %>%
+                    rename_at(vars("."), ~"SetSize"),
+            by="GeneSet") %>%
+  dplyr::select(GeneSet,SetSize,everything()) %>%
+  dplyr::arrange(desc(logFC))
+
+    
+head(DEgeneSets)
+dim(DEgeneSets) #61  8
+# range(DEgeneSets$logFC) #-0.07431598  0.13900430
+# range(DEgeneSets$SetSize) #21 389
+# quantile(DEgeneSets$logFC)
+```
+
+```{r}
+res <- decideTests(fit[sig.met.gsva.idx,], p.value=0.001)
+summary(res)
+```
+
+
+```{r}
+# fit
+# write.csv(DEgeneSets,"alluvial_plots/TARGET_AML_log10TPM_MSLN_gsva_signalingMetabolicPaths_KEGGpathways.csv",
+#           row.names = FALSE)
+
+forTable <- DEgeneSets %>% 
+    dplyr::slice(c(1:5, (nrow(.)-4):nrow(.))) %>% 
+    mutate(Enrichment=ifelse(t > 0, "Positive", "Negative")) %>% 
+    dplyr::select(GeneSet, SetSize, Enrichment, "Moderated t-statistic"=t,
+                  "Adjusted p-value"=adj.P.Val) %>%
+  mutate_at(vars("Moderated t-statistic"), ~round(.,  digits = 2)) %>% 
+  mutate_at(vars("Adjusted p-value"),~formatC(., format = "e", digits = 2))
+
+
+# write.csv(forTable,
+#           "alluvial_plots/TARGET_AML_log10TPM_MSLN_gsva_signalingMetabolicPaths_KEGGpathways_forTable.csv",
+#           row.names = FALSE)
+```
+
+```{r fig.height=4, fig.width=7}
+hist.dat <- gsva.res[sig.met.gsva.idx,] %>% 
+  as.data.frame() %>%
+  rownames_to_column("GeneSet") %>% 
+  gather(Patient,Erichment_Score, -GeneSet) %>%
+  mutate(Pos.Neg=ifelse(Erichment_Score > 0, "Pos","Neg"))
+
+# write.csv(hist.dat,"TARGET_AML_gsva_scores_histogram_data.csv", row.names = FALSE)  
+
+hist <- ggplot(data=hist.dat, aes(x=Erichment_Score)) +
+  geom_histogram(binwidth = 0.01, fill="navy", color="navy") +
+  scale_x_continuous(limits = c(-0.8,0.8), breaks = seq(-0.8,0.8,by=0.2)) +
+  theme_classic() +
+  theme(axis.text = element_text(size=16),
+        axis.title = element_text(size=18)) +
+  labs(y="Frequency of Score", x="Pathway Erichment Score")
+
+# saveRDS(hist,"TARGET_AML_gsva_scores_histogram.RDS")
+```
+
+```{r fig.height=7, fig.width=12}
+df <- topTable(fit[sig.met.gsva.idx,], coef=1,number=Inf)  %>%
+      rownames_to_column("GeneSet") %>%
+      mutate(Neg.Log10.P= -log10(P.Value),
+             Neg.Log10.FDR= -log10(adj.P.Val),
+             EffectSize=logFC,
+             Labels=gsub("KEGG_", "", GeneSet) %>% 
+               gsub("_FOR_IGA_PRODUCTION|_PATHWAY","",.),
+             DEGs.Groups=case_when(
+                  logFC > 0 & adj.P.Val < 0.001 ~ "Positive Enrichment",
+                  logFC < 0 & adj.P.Val < 0.001 ~ "Negative Enrichment",
+                  TRUE ~ "Not Significant"))
+
+  #Select differentially expressed genes to highlight in the plot. 
+  # idx <- which((df$logFC > 0.085 | df$logFC < -0.05))
+  idx <- which(df$GeneSet %in% forTable$GeneSet)
+  
+ 
+  vplot2 <- ggplot(df, aes(x=EffectSize, y=Neg.Log10.FDR)) + 
+    geom_point(data = filter(df, DEGs.Groups == "Not Significant"), 
+               mapping = aes(x=EffectSize, y=Neg.Log10.FDR,
+                             color=DEGs.Groups),
+               alpha=0.65, size=1.5)  +
+    
+    geom_point(data= filter(df, grepl("Enrichment", DEGs.Groups)), 
+               mapping = aes(x=EffectSize, y=Neg.Log10.FDR,
+                             color=DEGs.Groups),
+               size=2.0, alpha=0.7) +
+    scale_color_manual(values=c("Positive Enrichment"="red", 
+                                "Negative Enrichment"="blue",
+                                "Not Significant"="grey")) +
+    labs(x="Change in Enrichment Score", y="-log(10) FDR") +
+    scale_x_continuous(breaks=seq(-0.2,0.2, by=0.1), limits = c(-0.2,0.2)) +
+    
+    theme(plot.title = element_text(hjust = 0.5, size = 20),
+          panel.background = element_rect(fill="white"),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(color = "black", fill=NA),
+          axis.text = element_text(color = "black"),
+          axis.text.x = element_text(angle = 0,hjust=0.5,vjust = 0.5, size = 20),
+          axis.text.y = element_text(size = 20),
+          axis.title = element_text(size = 20),
+          legend.text = element_text(size=14),
+          legend.title = element_blank(),
+          plot.margin = margin(2,2,2,2, unit = "mm")) +
+      
+    geom_text_repel(aes(x=EffectSize, y=Neg.Log10.FDR, label=Labels),
+                    size=4.0,fontface = 'bold',
+                    data=df[idx, ],
+                    min.segment.length=0.00000001,
+                    box.padding=1.0,
+                    point.padding=0,
+                    ylim=c(0,58),
+                    xlim=c(-0.3,0.2),
+                    direction="both",
+                    force=3)
+  
+vplot2
+# ggsave(filename="TARGET_AML_MSLN_gsva_volcano_plot.png", plot=vplot2, device="png",
+#        height = 6, width = 12,units="in", dpi=300)
+# saveRDS(vplot2,"TARGET_AML_MSLN_gsva_volcano_plot.RDS")
+
+```
+
+```{r}
+# intersect(rownames(log10TPM), KEGG$KEGG_INTESTINAL_IMMUNE_NETWORK_FOR_IGA_PRODUCTION)
+# intersect(rownames(log10TPM), KEGG$KEGG_GLYCOSAMINOGLYCAN_DEGRADATION)
+```
+
+
+```{r fig.height=5, fig.width=7}
+# par(mfrow=3,)
+#mod procuded the same coefficenint as that seen by limma logFC! Great!
+  mod <- lm(gsva.res["KEGG_GLYCOSAMINOGLYCAN_DEGRADATION",] ~ 0+log10TPM["MSLN",])
+  plot(x=log10TPM["MSLN",],y=gsva.res["KEGG_GLYCOSAMINOGLYCAN_DEGRADATION",], 
+       cex=2, col="blue", pch=19)
+  abline(mod, col="red", lwd=2)
+
+summary(mod)
+```
+
+```{r}
+gg.dat <- gsva.res[forTable$GeneSet,] %>%
+  t() %>% 
+  as.data.frame() %>%
+  rownames_to_column("Patient") %>%
+  gather(GeneSet,Score,-Patient) %>%
+  mutate(GeneSet=factor(GeneSet, levels=c(forTable$GeneSet))) %>%
+  left_join(., as.data.frame(log10TPM["MSLN",]) %>% 
+              rownames_to_column("Patient") %>% 
+              rename_at(vars(2), ~"log10_MSLN"),
+            by="Patient") %>%
+  group_by(GeneSet) %>% 
+  arrange(desc(Score)) %>%
+  ungroup() 
+
+head(gg.dat)
+# View(gg.dat)
+```
+
+```{r fig.height=10, fig.width=14}
+ggplot(data=gg.dat, aes(x=log10_MSLN, y=Score, color=GeneSet)) +
+  geom_point(alpha=0.3) +
+  geom_rug(col="blue",alpha=0.1, size=1.5) +
+  facet_wrap(facets = ~ GeneSet,ncol = 5,scales = "free_y") +
+  geom_smooth(method="lm", formula = y ~ 0+x, color="black") +
+  theme_classic() +
+  labs(y="Enrichment Score") + 
+  guides(color = guide_legend(ncol=3, nrow=4)) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(size=6), 
+        plot.margin = margin(l=5, unit="mm"))
+```
+
+
+
+```{r fig.height=5, fig.width=7}
+# par(mfrow=3,)
+  mod <- lm(gsva.res["KEGG_ASTHMA",] ~ 0+log10TPM["MSLN",])
+  plot(x=log10TPM["MSLN",],y=gsva.res["KEGG_ASTHMA",], cex=2, col="blue", pch=19)
+  abline(mod, col="red", lwd=2)
+
+summary(mod)
+```
+
+
+## Scaled TPM Values 
+
+Just trying to see if the using mean centered MSLN expression provides a better estimate - since it standardized the expression and highlight patients with increased MSLN expression compared to the mean
+
+```{r}
+identical(colnames(scaledTPM), colnames(gsva.res))
+design.s <- model.matrix(~0+scaledTPM["MSLN",])
+
+
+range(gsva.res) #-0.8345510  0.8303137
+range(design.s) 
+
+
+fit.s <- lmFit(gsva.res, design.s)
+fit.s <- eBayes(fit.s)
+dim(fit.s)
+
+
+DE.scaled <- topTable(fit.s[sig.met.gsva.idx,],number = Inf, coef=1,
+                      p.value = 0.001, adjust.method = "BH") %>%
+  rownames_to_column("GeneSet") %>% 
+  arrange(desc(logFC))
+dim(DE.scaled)
+View(DE.scaled)
+
+summary(decideTests(fit.s[sig.met.gsva.idx,], coef=1, p.value = 0.001))
+```
+
+```{r}
+gg.dat.scaled <- gsva.res[forTable$GeneSet,] %>%
+  t() %>% 
+  as.data.frame() %>%
+  rownames_to_column("Patient") %>%
+  gather(GeneSet,Score,-Patient) %>%
+  mutate(GeneSet=factor(GeneSet, levels=c(forTable$GeneSet))) %>%
+  left_join(., as.data.frame(scaledTPM["MSLN",]) %>% 
+              rownames_to_column("Patient") %>% 
+              rename_at(vars(2), ~"scaledTPM_MSLN"),
+            by="Patient") %>%
+  group_by(GeneSet) %>% 
+  arrange(GeneSet,desc(Score)) %>%
+  ungroup() 
+
+head(gg.dat.scaled)
+# View(gg.dat.scaled)
+```
+
+
+```{r fig.height=10, fig.width=14}
+ggplot(data=gg.dat.scaled,
+       aes(x=scaledTPM_MSLN, y=Score, color=GeneSet)) +
+  geom_point(alpha=0.3) +
+  geom_rug(col="blue",alpha=0.1, size=1.5) +
+  facet_wrap(facets = ~ GeneSet,ncol = 5,scales = "fixed") +
+  geom_smooth(method="lm", formula = y ~ 0+x, color="black") +
+  theme_classic() +
+  labs() + 
+  theme(legend.position = "bottom",
+        strip.text = element_text(size=6), 
+        plot.margin = margin(l=5, unit="mm"))
+```
+
+
+
+#DE Analysis 
+
+```{r}
+counts <- readRDS(file.path(PROJHOME, "0000.00.03_ExpressionMatrices/TARGET_AML_DSAML_MPN_NBM_Ribodepleted_dupGenesRemoved_Fractionalcounts.RDS"))
+
+dim(counts)
+head(counts[,1:5])
+class(counts)
+```
+
+
+```{r}
+samps <- sample_info %>% 
+  filter(Time_point=="diagnostic", 
+         Group=="AML", 
+         !grepl("[rR]eplicate",Sample)) 
+  
+
+dim(samps)
+# head(samps)
+table(samps$Batch)
+table(samps$AML_Subtype)
+```
+
+```{r}
+options(scipen = 999)
+TPM <- TPM[,samps$Sample]
+```
+
+```{r}
+MSLN <- TPM["MSLN",] %>% 
+  t() %>% 
+  as.data.frame() %>%
+  rownames_to_column("Sample") %>% 
+  arrange(MSLN) %>%
+  mutate(MSLN_Expressor=ifelse(MSLN >= 5.0, "Yes", "No"),
+         log2_MSLN=log2(MSLN+1), 
+         Index=as.factor(1:nrow(.))) %>% 
+  left_join(., samps, by="Sample") %>% 
+  set_rownames(.$Sample)
+
+head(MSLN[,1:5])
+dim(MSLN)
+table(MSLN$MSLN_Expressor, useNA='ifany')
+```
+
+```{r}
+table(MSLN$MSLN < 1.0) #918 patients are less than 1.0 TPM
+table(MSLN$MSLN >= 1.0 & MSLN$MSLN < 5.0) #125 patients are in the intermediate
+table(MSLN$MSLN >= 5.0) #449 patients are >= 5.0 TPM 
+```
+
+```{r}
+MSLN$MSLN[which(MSLN$MSLN >= 4.8 & MSLN$MSLN <= 5.2)]  #index value to vline in waterfall plot
+MSLN$MSLN[which(MSLN$MSLN >= 0.994 & MSLN$MSLN <= 1.0065 )] 
+```
+
+```{r}
+MLSN_Table <- MSLN %>% 
+  group_by(Cytogenetic.Category.1, MSLN_Expressor) %>% 
+  summarize(N=n()) %>% 
+  ungroup() %>% 
+  
+  spread(MSLN_Expressor, N) %>%
+  mutate_at(vars(Cytogenetic.Category.1), ~case_when(
+            .=="MLL" ~  "KMT2A-R", 
+            .=="inv.16." ~ "inv(16)", 
+            .=="t.8.21." ~ "t(8;21)", 
+            .=="Normal" ~ "Normal Karyotype", 
+            .=="Other" ~ "Other Karyotype",
+            TRUE ~ "Unknown")) %>%
+  dplyr::select(Cytogenetic.Category.1, Positive=Yes, Negative=No) %>% 
+  mutate_at(vars(Cytogenetic.Category.1), ~factor(., levels=c("KMT2A-R", 
+                                                              "inv(16)",
+                                                              "t(8;21)",
+                                                              "Normal Karyotype",
+                                                              "Other Karyotype", 
+                                                              "Unknown"))) %>% 
+  arrange(Cytogenetic.Category.1)
+
+MLSN_Table
+# write.csv(MLSN_Table, "MSLN_Expressors_Cytogenetic_Groups_Table.csv", row.names = F)
+```
+
+
+```{r fig.height=4, fig.width=7}
+densityp <- ggplot(data=MSLN, aes(x=log2_MSLN, fill=MSLN_Expressor)) +
+  geom_density() + #fill="blue"
+  theme_classic() +
+  geom_vline(xintercept = log2(5.0), color="red") +
+  geom_vline(xintercept = log2(2.0), color="grey") +
+  labs(title="Density Plot of MSLN Expression by RNA-seq")
+
+
+waterfallp <- ggplot(data=MSLN, aes(x=Index, y=MSLN, 
+                                    fill=MSLN_Expressor, 
+                                    color=MSLN_Expressor)) + #color=MSLN_Expressor
+  geom_bar(stat="identity") + # fill="blue", color="blue"
+  scale_color_brewer(palette = "Paired") +
+  scale_fill_brewer(palette = "Paired") +
+  geom_vline(xintercept = which(MSLN$MSLN >= 4.8 & MSLN$MSLN <= 5.2), color="red", linetype=2) +
+  geom_vline(xintercept = which(MSLN$MSLN >= 0.994 & MSLN$MSLN <= 1.0065 ), color="grey50", linetype=2) +
+  labs(x="Patient", y="MSLN TPM", title="Waterfall Plot of MSLN Expression by RNA-seq") +
+  theme_classic() +
+  theme(axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank()) 
+  
+waterfallp  
+# ggsave(waterfallp, filename = "DEGs/TARGET_AML_MSLNpositive_vs_MSLNnegative_waterfallplot.pdf", device="pdf", height = 4, width=7)
+
+# grid.arrange(grobs=list(densityp, waterfallp), ncol=2)
+```
+
+
+```{r warning=FALSE, message=FALSE}
+DE <- twoGroups_DEGs(expnData = as.matrix(counts),
+                     clinData = as.data.frame(MSLN),
+                     col = "MSLN_Expressor", 
+                     ref = "No")
+
+
+# dir.create("DEGs")
+
+# saveRDS(DE, "DEGs/TARGET_AML_MSLNpositive_vs_MSLNnegative_AML_DEGs.RDS")
+```
+
+```{r}
+DE <- readRDS("DEGs/TARGET_AML_MSLNpositive_vs_MSLNnegative_AML_DEGs.RDS")
+```
+
+
+```{r}
+DEGs.df <- extract_DEGs(DE, anno = TRUE, geneLevel = TRUE)
+
+
+head(DEGs.df)
+dim(DEGs.df) #1191    8
+
+# write.csv(DEGs.df, "DEGs/TARGET_AML_MSLNpositive_vs_MSLNnegative_AML_DEGs.csv", row.names = FALSE)
+```
+
+
+```{r}
+DEGs.subset <- DEGs.df %>% 
+  # slice(c(1:11,1182:1191)) %>% 
+  slice(c(2:6,1187:1191)) %>% 
+  mutate(adj.P.Val=formatC(adj.P.Val, format = "e", digits = 2), 
+         logFC=round(logFC, digits = 2)) %>%
+  select(GeneSymbol=gene, "log2 Fold-Change"=logFC, "Adjusted p-value"=adj.P.Val)
+
+# DEGs.subset
+# write.csv(DEGs.subset, "DEGs/TARGET_AML_MSLNpositive_vs_MSLNnegative_DEGs_Table.csv", row.names = FALSE)
+```
+
+
+```{r}
+# ComplexHeatmap::draw(DE$Heatmap)
+```
+
+```{r}
+# extract_MDS(DE)
+```
+
+
+
+#Session Information
+
+```{r}
+sessionInfo()
+```
+
